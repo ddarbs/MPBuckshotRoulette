@@ -35,18 +35,35 @@ public class MasterToDo : MonoBehaviour
  *      - done: make a placeholder TurnSystem function to reset the game when someone dies
  *      - done: hover description text UI for items
  *      - done: audio mixer and volume slider/mute button
- *      - todo: finish connecting lobby to game scene (tests perfectly except for subscribing to hp functions, p sure it's an observer issue)
- *      - todo: handle quitting/dcing from game scene
- *      - todo: button that returns to lobby scene from game scene
+ *      - done: finish connecting lobby to game scene
+ *      - todo: handle quitting/dcing from game scene 
+ *      - todo: button that returns to lobby scene from game scene 
  *      - done: lobby kick player2 button
- *      - todo: visuals - eject shells, rack shotgun, new table model, new item models, mess with shaders
- *      - todo: test observer conditions w/multiple lobbies going at the same time 
+ *      - todo: visuals - (done)blood effect when shot, item use effects (think just magnifying glass and phone still text stuff), maybe change table model
+ *      - done: test observer conditions w/multiple lobbies going at the same time 
+ *      - done: disable physics raycaster during camera movements so they cant hover/click on items
+ *      - done: pause turn when using an item
+ *      - done: temp turning for shotgun, racking shotgun
+ *      - done: spawn shells on round start
+ *      - done: eject shells (just shoot out the side and let networktransform do it's thing, will need a coroutine to control movement since don't want rigidbody) 
+ *      - done: pause for some sort of victory screen/effect (maybe lights show above the winner and a jingle plays?), (already done)then go back to ready up screen 
+ *      - todo: more sound stuff - (done)audio on shell spawn, audio on item spawns, (done for now)have item use wait until item audio finished playing to do stuff
+ *      - todo: change ready up/self/other button ui
+ *      - todo: tweak the wait timings
+ *      - done: version check on connect screen
+ *      - todo: (done)dim music when using item, (done)game over, ?
+ *      - done: cap items used per turn, show item use ui (setup so we could make this a lobby option if wanted)
+ *      - done: swap shotgun pump and shell eject from server to local
+ *      - done: fix bug where dying from pills during your turn doesn't end the game
+ *      - todo: scale testing up to multiple lobbies
+ *      - todo: scale the lobby browser scrollview height by number of lobbies
+ *      
+ *
  */
 
 
 /*
 Ideas:
-    - lobby cfg option for hp? 
     - item that causes your opponent's next used item to have a 50% fail chance?
     
 */

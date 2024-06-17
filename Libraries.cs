@@ -43,6 +43,8 @@ namespace TTVadumb
             public bool inGame;
             public bool cfg_ItemsEnabled;
             [Range(1, 8)] public int cfg_ItemCount;
+            public bool cfg_ItemTurnCapEnabled;
+            [Range(1, 8)] public int cfg_ItemTurnCap;
             public bool cfg_StaticShellCountEnabled;
             [Range(4, 10)] public int cfg_ShellCount;
             public bool cfg_TurnTimerEnabled;
@@ -56,6 +58,9 @@ namespace TTVadumb
                 
                 cfg_ItemsEnabled = true;
                 cfg_ItemCount = 3;
+
+                cfg_ItemTurnCapEnabled = true;
+                cfg_ItemTurnCap = 3;
                 
                 cfg_StaticShellCountEnabled = true;
                 cfg_ShellCount = 7;

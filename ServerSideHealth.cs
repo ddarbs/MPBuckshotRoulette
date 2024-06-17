@@ -8,6 +8,7 @@ using FishNet.Object.Synchronizing;
 using FishNet.Transporting;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 public class ServerSideHealth : NetworkBehaviour 
 {
@@ -15,11 +16,12 @@ public class ServerSideHealth : NetworkBehaviour
     
 #region Inspector Refs
     [SerializeField] private GameObject[] i_HealthOrbs;
+    [SerializeField] private Image i_BloodLayer;
 #endregion Inspector Refs
 
 #region Variables
     private const int c_BaseHealth = 5;
-    private readonly SyncVar<int> i_CurrentHealth = new SyncVar<int>(new SyncTypeSettings(WritePermission.ServerOnly, ReadPermission.Observers, 0.5f, Channel.Unreliable));
+    private readonly SyncVar<int> i_CurrentHealth = new SyncVar<int>(new SyncTypeSettings(WritePermission.ServerOnly, ReadPermission.Observers, 0.5f, Channel.Reliable));
     private bool i_Dying = false;
     private NetworkConnection i_Player;
 #endregion Variables
@@ -52,6 +54,7 @@ public class ServerSideHealth : NetworkBehaviour
             
         i_CurrentHealth.OnChange += SyncVar_OnHealthChange; // BUG: this isn't being called when going from lobby->game on the client? why isn't the player seen as an observer?
         Debug.Log("OnStartClient in " + gameObject.name);
+        Debug.Log(i_CurrentHealth + " " + i_CurrentHealth.Value);
     }
 
     public override void OnStopClient()
@@ -141,6 +144,7 @@ public class ServerSideHealth : NetworkBehaviour
         if (next < prev)
         {
             AudioSystem.Game_OnDamage(); // music dimming/heartbeat effect
+            StartCoroutine(BloodEffect());
         }
     }
 #endregion Both
@@ -200,5 +204,22 @@ public class ServerSideHealth : NetworkBehaviour
     {
         i_Player = _conn;
         Debug.Log($"(debug) {gameObject.name} got setup for client id {_conn.ClientId}, and my id is {base.LocalConnection.ClientId}");
+    }
+
+    private IEnumerator BloodEffect()
+    {
+        Color l_Color = i_BloodLayer.color;
+        while (i_BloodLayer.color.a < 1f)
+        {
+            l_Color.a += 0.2f;
+            i_BloodLayer.color = l_Color;
+            yield return new WaitForSeconds(0.025f);
+        }
+        while (i_BloodLayer.color.a > 0f)
+        {
+            l_Color.a -= 0.05f;
+            i_BloodLayer.color = l_Color;
+            yield return new WaitForSeconds(0.15f);
+        }
     }
 }

@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
+using FishNet.Component.Observing;
 using FishNet.Connection;
 using FishNet.Managing.Scened;
+using FishNet.Managing.Server;
 using FishNet.Object;
 using TTVadumb.Lobby;
 using UnityEngine;
@@ -13,6 +15,7 @@ public class ConnectSystem : NetworkBehaviour
     [SerializeField] private AudioListener i_SceneAudioListener;
     [SerializeField] private EventSystem i_SceneEventSystem;
     [SerializeField] private AudioSource i_MusicSource;
+    [SerializeField] private GameObject i_VersionFailedText, i_ClientLoginButton;
     
     public override void OnStartServer()
     {
@@ -40,16 +43,61 @@ public class ConnectSystem : NetworkBehaviour
 
     private void OnClientLoadedStartScenes(NetworkConnection _conn, bool _asServer)
     {
-        SceneUnloadData _sud = new SceneUnloadData("ConnectScene");
+        Target_CheckVersion(_conn);
+        
+        /*SceneUnloadData _sud = new SceneUnloadData("ConnectScene");
         _sud.Options.Mode = UnloadOptions.ServerUnloadMode.KeepUnused;
         
         base.SceneManager.UnloadConnectionScenes(_conn, _sud);
-        // TODO: look at the fishnet demo script for scenemanager loading, see if they have a cleaner way to load/unload
+        // TODO: look at the fishnet demo script for scenemanager loading, see if they have a cleaner way to load/unload*/
     }
 
     /*public override void OnStartClient()
     {
         base.OnStartClient();
-        AudioSystem.ExitScene();
+        CheckVersion(Application.version);
     }*/
+
+    [TargetRpc]
+    private void Target_CheckVersion(NetworkConnection _conn)
+    {
+        Server_CheckVersion(base.LocalConnection, Application.version);
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void Server_CheckVersion(NetworkConnection _conn, string _version)
+    {
+        if (_version != Application.version)
+        {
+            SceneUnloadData _sud = new SceneUnloadData("LobbyScene");
+            _sud.Options.Mode = UnloadOptions.ServerUnloadMode.KeepUnused;
+        
+            Target_VersionFailed(_conn);
+            
+            base.SceneManager.UnloadConnectionScenes(_conn, _sud);
+
+            StartCoroutine(Server_DelayKick(_conn));
+        }
+        else
+        {
+            SceneUnloadData _sud = new SceneUnloadData("ConnectScene");
+            _sud.Options.Mode = UnloadOptions.ServerUnloadMode.KeepUnused;
+        
+            base.SceneManager.UnloadConnectionScenes(_conn, _sud);
+            // TODO: look at the fishnet demo script for scenemanager loading, see if they have a cleaner way to load/unload
+        }
+    }
+
+    [TargetRpc]
+    private void Target_VersionFailed(NetworkConnection _conn)
+    {
+        i_ClientLoginButton.SetActive(false);
+        i_VersionFailedText.SetActive(true);
+    }
+
+    private IEnumerator Server_DelayKick(NetworkConnection _conn)
+    {
+        yield return new WaitForSeconds(1f);
+        ServerManager.Kick(_conn, KickReason.UnexpectedProblem);
+    }
 }

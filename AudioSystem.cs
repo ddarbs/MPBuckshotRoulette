@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.Serialization;
 
 public class AudioSystem : MonoBehaviour // this is all client side
@@ -39,6 +40,8 @@ public class AudioSystem : MonoBehaviour // this is all client side
     [SerializeField] private AudioClip i_HealthSpawnNoise;
     [SerializeField] private AudioClip i_DiceRoll;
     [SerializeField] private AudioClip i_DiceRollVictory;
+    [SerializeField] private AudioClip i_GameVictory;
+    [SerializeField] private AudioClip i_ShellSpawn;
 #endregion Inspector Refs
 
 #region Variables
@@ -53,6 +56,13 @@ public class AudioSystem : MonoBehaviour // this is all client side
         // overwrite the static ref on every new scene
         i_Instance = this;
     }
+    
+    // DEBUG
+    public static Scene GetScene()
+    {
+        return i_Instance.gameObject.scene;
+    }
+    // DEBUG
 
 #region Scene Stuff
     private void Start() // this will cause a bunch of "there are no audio listeners in the scene" while not a Client, but it won't happen when we connect Lobby->Game 
@@ -133,12 +143,13 @@ public class AudioSystem : MonoBehaviour // this is all client side
     public static void Game_OnDamage()
     {
         i_Instance.i_Music.volume = 0f;
+        //i_Instance.StartCoroutine(i_Instance.DecreaseMusicVolume());
         Game_Heartbeat();
-        i_Instance.StartCoroutine(i_Instance.IncreaseVolume());
+        i_Instance.StartCoroutine(i_Instance.IncreaseMusicVolume(3f));
     }
-    private IEnumerator IncreaseVolume()
+    private IEnumerator IncreaseMusicVolume(float _delay)
     {
-        yield return new WaitForSeconds(2f);
+        yield return new WaitForSeconds(_delay);
         float l_AddVolume = c_BaseMusicVolume / 10f;
         while (i_Music.volume < c_BaseMusicVolume)
         {
@@ -149,6 +160,16 @@ public class AudioSystem : MonoBehaviour // this is all client side
         if (i_Music.volume > c_BaseMusicVolume)
         {
             i_Music.volume = c_BaseMusicVolume;
+        }
+    }
+    
+    private IEnumerator DecreaseMusicVolume()
+    {
+        float l_SubtractVolume = c_BaseMusicVolume / 10f;
+        while (i_Music.volume > 0f)
+        {
+            yield return new WaitForSeconds(0.1f);
+            i_Music.volume -= l_SubtractVolume;
         }
     }
     
@@ -194,32 +215,60 @@ public class AudioSystem : MonoBehaviour // this is all client side
     
     public static void Game_Item_Beer()
     {
+        i_Instance.Game_Item_MusicDim(i_Instance.i_Item_Beer.length);
         i_Instance.i_Audio.PlayOneShot(i_Instance.i_Item_Beer, 1f);
     }
     
     public static void Game_Item_Smoke()
     {
+        i_Instance.Game_Item_MusicDim(i_Instance.i_Item_Smokes.length);
         i_Instance.i_Audio.PlayOneShot(i_Instance.i_Item_Smokes, 1f);
     }
     public static void Game_Item_Magnify()
     {
+        i_Instance.Game_Item_MusicDim(i_Instance.i_Item_Magnifying.length);
         i_Instance.i_Audio.PlayOneShot(i_Instance.i_Item_Magnifying, 1f);
     }
     public static void Game_Item_Inverter()
     {
+        i_Instance.Game_Item_MusicDim(i_Instance.i_Item_Inverter.length);
         i_Instance.i_Audio.PlayOneShot(i_Instance.i_Item_Inverter, 1f);
     }
     public static void Game_Item_Phone()
     {
+        i_Instance.Game_Item_MusicDim(i_Instance.i_Item_Phone.length);
         i_Instance.i_Audio.PlayOneShot(i_Instance.i_Item_Phone, 1f);
     }
     public static void Game_Item_Saw()
     {
+        i_Instance.Game_Item_MusicDim(i_Instance.i_Item_Saw.length);
         i_Instance.i_Audio.PlayOneShot(i_Instance.i_Item_Saw, 1f);
     }
     public static void Game_Item_Pills()
     {
+        i_Instance.Game_Item_MusicDim(i_Instance.i_Item_Pills.length);
         i_Instance.i_Audio.PlayOneShot(i_Instance.i_Item_Pills, 1f);
+    }
+    public static void Game_Over_Start()
+    {
+        //i_Instance.i_Music.volume = 0f;
+        i_Instance.StartCoroutine(i_Instance.DecreaseMusicVolume());
+        i_Instance.i_Audio.PlayOneShot(i_Instance.i_GameVictory, 1f);
+    }
+    public static void Game_Over_End()
+    {
+        i_Instance.StartCoroutine(i_Instance.IncreaseMusicVolume(0f));
+        //i_Instance.i_Music.volume = 0.2f;
+    }
+    public static void Game_Shell_Spawn()
+    {
+        i_Instance.i_Audio.PlayOneShot(i_Instance.i_ShellSpawn, 1f);
+    }
+
+    private void Game_Item_MusicDim(float _sfxDuration)
+    {
+        StartCoroutine(DecreaseMusicVolume());
+        StartCoroutine(IncreaseMusicVolume(_sfxDuration));
     }
     
 #endregion Game Stuff

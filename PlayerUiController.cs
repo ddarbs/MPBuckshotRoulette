@@ -68,7 +68,7 @@ public class PlayerUiController : NetworkBehaviour
         {
             _orb.SetActive(false);
         }
-        i_Shotgun.SetActive(false);
+        //i_Shotgun.SetActive(false); // never gets turned back on
         i_Ammo.SetActive(false);
 
         i_InitialUI.SetActive(true);
@@ -160,20 +160,20 @@ public class PlayerUiController : NetworkBehaviour
     }
 
     [ObserversRpc]
-    public void Observer_ActivatePlayerOneHealth() // BUG: activates orbs for lost hp on reload, doesn't affect actual hp though
+    public void Observer_ActivatePlayerOneHealth(int _hp)
     {
-        foreach (var _orb in i_player1Health)
+        for (int i = 0; i < _hp; i++)
         {
-            _orb.SetActive(true);
+            i_player1Health[i].SetActive(true);
         }
     }
     
     [ObserversRpc]
-    public void Observer_ActivatePlayerTwoHealth() // BUG: activates orbs for lost hp on reload, doesn't affect actual hp though
+    public void Observer_ActivatePlayerTwoHealth(int _hp)
     {
-        foreach (var _orb in i_player2Health)
+        for (int i = 0; i < _hp; i++)
         {
-            _orb.SetActive(true);
+            i_player2Health[i].SetActive(true);
         }
     }
 

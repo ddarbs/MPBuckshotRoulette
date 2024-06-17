@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using FishNet.Component.Observing;
 using FishNet.Connection;
 using FishNet.Demo.AdditiveScenes;
 using FishNet.Managing.Scened;
@@ -26,16 +27,14 @@ public class LobbySystem : NetworkBehaviour
     [SerializeField] private NetworkObject LobbyParent;
     [SerializeField] private NetworkObject LobbyPrefab;
     [SerializeField] private GameObject BrowserUI, LobbyUI;
+    [SerializeField] private GridLayoutGroup i_LobbyGrid;
 
     [Header("Lobby UI")] 
     [SerializeField] private TextMeshProUGUI i_PlayerOneText;
     [SerializeField] private TextMeshProUGUI i_PlayerTwoText, i_LobbyIDText;
-    [SerializeField] private Toggle i_ItemToggle, i_ShellToggle, i_TurnToggle;
-    [SerializeField] private Slider i_ItemSlider, i_ShellSlider, i_TurnSlider;
+    [SerializeField] private Toggle i_ItemToggle, i_ItemCapToggle, i_ShellToggle, i_TurnToggle;
+    [SerializeField] private Slider i_ItemSlider, i_ItemCapSlider, i_ShellSlider, i_TurnSlider;
     [SerializeField] private Button i_KickPlayerTwoButton, i_StartGameButton;
-
-    [Header("Lobby Config")] 
-    [SerializeField] private NetworkObject i_LobbyConfigTransferPrefab;
 #endregion Inspector Refs
 
 #region Variables
@@ -49,7 +48,7 @@ public class LobbySystem : NetworkBehaviour
     /// </summary>
     private Dictionary<int, Lobby> LobbyList = new Dictionary<int, Lobby>();
 
-    private int NextLobbyID = 0;
+    private int NextLobbyID = 1;
 
     private bool Client_IsLobbyOwner = false;
 #endregion Variables
@@ -171,14 +170,20 @@ public class LobbySystem : NetworkBehaviour
         LobbyList.Add(NextLobbyID, _newLobby);
         NextLobbyID++;
         
+        // BUG: for some reason PlayFlow is spawning it at 3x scale?
+        _newLobbyUI.transform.localScale = new Vector3(1f, 1f, 1f);
+        // BUG: playflow loves to instantiate at weird spots too
+        Observer_NudgeLobbyGrid();
+        
         // spawn it
         ServerManager.Spawn(_newLobbyUI, _conn);
         
         // update the ui for everyone
         _lobbyHandler.OnLobbyStart();
+        
 
         // target creator into the lobby
-        Target_CreateLobby(_conn, _newLobby.id, PlayerList[_conn].name, _newLobby.cfg_ItemsEnabled, _newLobby.cfg_ItemCount, _newLobby.cfg_StaticShellCountEnabled, _newLobby.cfg_ShellCount, _newLobby.cfg_TurnTimerEnabled, _newLobby.cfg_TurnTimeoutIndex);
+        Target_CreateLobby(_conn, _newLobby.id, PlayerList[_conn].name, _newLobby.cfg_ItemsEnabled, _newLobby.cfg_ItemCount, _newLobby.cfg_ItemTurnCapEnabled, _newLobby.cfg_ItemTurnCap, _newLobby.cfg_StaticShellCountEnabled, _newLobby.cfg_ShellCount, _newLobby.cfg_TurnTimerEnabled, _newLobby.cfg_TurnTimeoutIndex);
     }
 
     public void Server_JoinLobby(NetworkConnection _conn, int _lobbyID)
@@ -197,7 +202,7 @@ public class LobbySystem : NetworkBehaviour
         
         LobbyList[_lobbyID].handler.GetComponent<LobbyHandler>().OnLobbyJoin(PlayerList[_conn].name);
         
-        Target_JoinLobby(_conn, _lobbyID, PlayerList[LobbyList[_lobbyID].owner].name, PlayerList[_conn].name, LobbyList[_lobbyID].cfg_ItemsEnabled, LobbyList[_lobbyID].cfg_ItemCount, LobbyList[_lobbyID].cfg_StaticShellCountEnabled, LobbyList[_lobbyID].cfg_ShellCount, LobbyList[_lobbyID].cfg_TurnTimerEnabled, LobbyList[_lobbyID].cfg_TurnTimeoutIndex);
+        Target_JoinLobby(_conn, _lobbyID, PlayerList[LobbyList[_lobbyID].owner].name, PlayerList[_conn].name, LobbyList[_lobbyID].cfg_ItemsEnabled, LobbyList[_lobbyID].cfg_ItemCount, LobbyList[_lobbyID].cfg_ItemTurnCapEnabled, LobbyList[_lobbyID].cfg_ItemTurnCap, LobbyList[_lobbyID].cfg_StaticShellCountEnabled, LobbyList[_lobbyID].cfg_ShellCount, LobbyList[_lobbyID].cfg_TurnTimerEnabled, LobbyList[_lobbyID].cfg_TurnTimeoutIndex);
         Target_PlayerTwoJoinedLobby(LobbyList[_lobbyID].owner, PlayerList[_conn].name);
     }
     
@@ -255,6 +260,16 @@ public class LobbySystem : NetworkBehaviour
     }
     
     [ServerRpc(RequireOwnership = false)]
+    private void Server_SliderItemCapChange(NetworkConnection _conn, int _value)
+    {
+        LobbyList[PlayerList[_conn].lobbyID].cfg_ItemTurnCap = _value;
+        if (LobbyList[PlayerList[_conn].lobbyID].playerCount > 1)
+        {
+            Target_SliderItemCapChange(LobbyList[PlayerList[_conn].lobbyID].playertwo, _value);
+        }
+    }
+    
+    [ServerRpc(RequireOwnership = false)]
     private void Server_SliderShellChange(NetworkConnection _conn, int _value)
     {
         LobbyList[PlayerList[_conn].lobbyID].cfg_ShellCount = _value;
@@ -285,6 +300,16 @@ public class LobbySystem : NetworkBehaviour
     }
     
     [ServerRpc(RequireOwnership = false)]
+    private void Server_ToggleItemCapChange(NetworkConnection _conn, bool _enabled)
+    {
+        LobbyList[PlayerList[_conn].lobbyID].cfg_ItemTurnCapEnabled = _enabled;
+        if (LobbyList[PlayerList[_conn].lobbyID].playerCount > 1)
+        {
+            Target_ToggleItemCapChange(LobbyList[PlayerList[_conn].lobbyID].playertwo, _enabled);
+        }
+    }
+        
+    [ServerRpc(RequireOwnership = false)]
     private void Server_ToggleShellChange(NetworkConnection _conn, bool _enabled)
     {
         LobbyList[PlayerList[_conn].lobbyID].cfg_StaticShellCountEnabled = _enabled;
@@ -307,33 +332,66 @@ public class LobbySystem : NetworkBehaviour
     [ServerRpc(RequireOwnership = false)]
     private void Server_StartGame(NetworkConnection _conn)
     {
-        NetworkObject l_ConfigTransfer = Instantiate(i_LobbyConfigTransferPrefab);
-        l_ConfigTransfer.GetComponent<LobbyConfigTransfer>().p_Lobby = LobbyList[PlayerList[_conn].lobbyID];
-        ServerManager.Spawn(l_ConfigTransfer);
-        
+        Debug.Log("loading into new scene");
         NetworkConnection[] _players = new NetworkConnection[] { _conn, LobbyList[PlayerList[_conn].lobbyID].playertwo };
         
+        // add to match condition for observers
+        //MatchCondition.AddToMatch(0, _players);
+        
+        /*SceneLoadData servertest_sld = new SceneLoadData("SampleScene");
+        servertest_sld.Options.AllowStacking = true;
+        servertest_sld.Options.LocalPhysics = LocalPhysicsMode.Physics3D;
+        servertest_sld.Params = new LoadParams() { ServerParams = new object[] { LobbyList[PlayerList[_conn].lobbyID] } };
+        base.SceneManager.LoadConnectionScenes(servertest_sld);*/
+
         SceneLoadData _sld = new SceneLoadData("SampleScene");
+        _sld.SceneLookupDatas[0].Handle = PlayerList[_conn].lobbyID;
         _sld.Options.AllowStacking = true;
-        _sld.Options.AutomaticallyUnload = false;
         _sld.Options.LocalPhysics = LocalPhysicsMode.Physics3D;
-        _sld.MovedNetworkObjects = new NetworkObject[] { l_ConfigTransfer };
+        _sld.Params = new LoadParams() { ServerParams = new object[] { LobbyList[PlayerList[_conn].lobbyID] } };
+        base.SceneManager.LoadConnectionScenes(_players, _sld);
         
         SceneUnloadData _sud = new SceneUnloadData("LobbyScene");
         _sud.Options.Mode = UnloadOptions.ServerUnloadMode.KeepUnused;
-        
         base.SceneManager.UnloadConnectionScenes(_players, _sud);
-        base.SceneManager.LoadConnectionScenes(_players, _sld);
+
+        //StartCoroutine(Test_DelayClientLoad(_players));
     }
 #endregion ServerRPCs
 
-#region ObserverRPCs
+private IEnumerator Test_DelayClientLoad(NetworkConnection[] _players)
+{
+    yield return new WaitForSeconds(1f);
+    Debug.Log("loading clients into new scene");
+    SceneLoadData _sld = new SceneLoadData("SampleScene");
+    //_sld.Options.AllowStacking = true;
+    _sld.Options.LocalPhysics = LocalPhysicsMode.Physics3D;
+    _sld.Params = new LoadParams() { ServerParams = new object[] { LobbyList[PlayerList[_players[0]].lobbyID] } };
+    base.SceneManager.LoadConnectionScenes(_players, _sld);
+        
+    SceneUnloadData _sud = new SceneUnloadData("LobbyScene");
+    _sud.Options.Mode = UnloadOptions.ServerUnloadMode.KeepUnused;
+    base.SceneManager.UnloadConnectionScenes(_players, _sud);
+}
 
+#region ObserverRPCs
+    [ObserversRpc]
+    private void Observer_NudgeLobbyGrid()
+    {
+        StartCoroutine(DelayedNudgeLobbyGrid());
+    }
+
+    private IEnumerator DelayedNudgeLobbyGrid()
+    {
+        i_LobbyGrid.enabled = false;
+        yield return new WaitForSeconds(0.5f);
+        i_LobbyGrid.enabled = true;
+    }
 #endregion
 
 #region TargetRPCs
     [TargetRpc]
-    private void Target_CreateLobby(NetworkConnection _conn, int _lobbyID, string _playerOne, bool _cfgItemsEnabled, int _cfgItemCount, bool _cfgStaticShells, int _cfgShells, bool _cfgTurnTimer, int _cfgTurnTimeIndex)
+    private void Target_CreateLobby(NetworkConnection _conn, int _lobbyID, string _playerOne, bool _cfgItemsEnabled, int _cfgItemCount, bool _cfgItemCapEnabled, int _cfgItemCap, bool _cfgStaticShells, int _cfgShells, bool _cfgTurnTimer, int _cfgTurnTimeIndex)
     {
         i_LobbyIDText.text = $"lobby id {_lobbyID}";
         
@@ -342,6 +400,8 @@ public class LobbySystem : NetworkBehaviour
             
         i_ItemToggle.interactable = true;
         i_ItemSlider.interactable = true;
+        i_ItemCapToggle.interactable = true;
+        i_ItemCapSlider.interactable = true;
         i_ShellToggle.interactable = true;
         i_ShellSlider.interactable = true;
         i_TurnToggle.interactable = true;
@@ -351,6 +411,8 @@ public class LobbySystem : NetworkBehaviour
         
         i_ItemToggle.isOn = _cfgItemsEnabled;
         i_ItemSlider.value = _cfgItemCount;
+        i_ItemCapToggle.isOn = _cfgItemCapEnabled;
+        i_ItemCapSlider.value = _cfgItemCap;
         i_ShellToggle.isOn = _cfgStaticShells;
         i_ShellSlider.value = _cfgShells;
         i_TurnToggle.isOn = _cfgTurnTimer;
@@ -363,7 +425,7 @@ public class LobbySystem : NetworkBehaviour
     }
 
     [TargetRpc]
-    private void Target_JoinLobby(NetworkConnection _conn, int _lobbyID, string _playerOne, string _playerTwo, bool _cfgItemsEnabled, int _cfgItemCount, bool _cfgStaticShells, int _cfgShells, bool _cfgTurnTimer, int _cfgTurnTimeIndex)
+    private void Target_JoinLobby(NetworkConnection _conn, int _lobbyID, string _playerOne, string _playerTwo, bool _cfgItemsEnabled, int _cfgItemCount, bool _cfgItemCapEnabled, int _cfgItemCap, bool _cfgStaticShells, int _cfgShells, bool _cfgTurnTimer, int _cfgTurnTimeIndex)
     {
         i_LobbyIDText.text = $"lobby id {_lobbyID}";
         
@@ -372,6 +434,8 @@ public class LobbySystem : NetworkBehaviour
         
         i_ItemToggle.interactable = false;
         i_ItemSlider.interactable = false;
+        i_ItemCapToggle.interactable = false;
+        i_ItemCapSlider.interactable = false;
         i_ShellToggle.interactable = false;
         i_ShellSlider.interactable = false;
         i_TurnToggle.interactable = false;
@@ -381,6 +445,8 @@ public class LobbySystem : NetworkBehaviour
         
         i_ItemToggle.isOn = _cfgItemsEnabled;
         i_ItemSlider.value = _cfgItemCount;
+        i_ItemCapToggle.isOn = _cfgItemCapEnabled;
+        i_ItemCapSlider.value = _cfgItemCap;
         i_ShellToggle.isOn = _cfgStaticShells;
         i_ShellSlider.value = _cfgShells;
         i_TurnToggle.isOn = _cfgTurnTimer;
@@ -410,6 +476,14 @@ public class LobbySystem : NetworkBehaviour
     }
     
     [TargetRpc]
+    private void Target_SliderItemCapChange(NetworkConnection _conn, int _value)
+    {
+        i_ItemCapSlider.value = _value;
+        
+        AudioSystem.Slider_Change();
+    }
+    
+    [TargetRpc]
     private void Target_SliderShellChange(NetworkConnection _conn, int _value)
     {
         i_ShellSlider.value = _value;
@@ -429,6 +503,14 @@ public class LobbySystem : NetworkBehaviour
     private void Target_ToggleItemChange(NetworkConnection _conn, bool _enabled)
     {
         i_ItemToggle.isOn = _enabled;
+        
+        AudioSystem.Slider_Change();
+    }
+    
+    [TargetRpc]
+    private void Target_ToggleItemCapChange(NetworkConnection _conn, bool _enabled)
+    {
+        i_ItemCapToggle.isOn = _enabled;
         
         AudioSystem.Slider_Change();
     }
@@ -504,6 +586,18 @@ public class LobbySystem : NetworkBehaviour
         AudioSystem.Slider_Change();
     }
     
+    public void Slider_ItemCap_OnValueChanged(float _value)
+    {
+        if (!Client_IsLobbyOwner)
+        {
+            return;
+        }
+        
+        Server_SliderItemCapChange(base.LocalConnection, Mathf.RoundToInt(_value));
+        
+        AudioSystem.Slider_Change();
+    }
+    
     public void Slider_Shell_OnValueChanged(float _value)
     {
         if (!Client_IsLobbyOwner)
@@ -529,7 +623,7 @@ public class LobbySystem : NetworkBehaviour
     }
 #endregion Sliders
 
-#region Sliders
+#region Toggles
 public void Toggle_Items_OnValueChanged(bool _enabled)
 {
     if (!Client_IsLobbyOwner)
@@ -538,6 +632,18 @@ public void Toggle_Items_OnValueChanged(bool _enabled)
     }
         
     Server_ToggleItemChange(base.LocalConnection, _enabled);
+    
+    AudioSystem.Slider_Change();
+}
+
+public void Toggle_ItemCap_OnValueChanged(bool _enabled)
+{
+    if (!Client_IsLobbyOwner)
+    {
+        return;
+    }
+        
+    Server_ToggleItemCapChange(base.LocalConnection, _enabled);
     
     AudioSystem.Slider_Change();
 }
@@ -565,5 +671,5 @@ public void Toggle_Turn_OnValueChanged(bool _enabled)
     
     AudioSystem.Slider_Change();
 }
-#endregion Sliders
+#endregion Toggles
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using FishNet.Component.Observing;
 using FishNet.Connection;
 using FishNet.Managing.Scened;
 using FishNet.Object;
@@ -8,6 +9,7 @@ using FishNet.Transporting;
 using TTVadumb.Lobby;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 
 public class PlayerSpawnSystem : NetworkBehaviour
 {
@@ -19,6 +21,10 @@ public class PlayerSpawnSystem : NetworkBehaviour
     [SerializeField] private NetworkObject i_PlayerPrefab;
     [SerializeField] private Transform i_PlayerOneSpawnPos, i_PlayerTwoSpawnPos;
     [SerializeField] private ServerSideHealth i_PlayerOneHealth, i_PlayerTwoHealth;
+    [SerializeField] private PlayerItemSystem i_PlayerItemSystem;
+
+    [SerializeField] private NetworkObject i_TestP1HP, i_TestP2HP;
+    [SerializeField] private GameObject i_PlayerOneObject, i_PlayerTwoObject;
 #endregion Inspector Refs
 
 #region Variables
@@ -33,8 +39,14 @@ public class PlayerSpawnSystem : NetworkBehaviour
         
         ServerManager.OnRemoteConnectionState += OnRemoteConnectionState;
         NetworkManager.SceneManager.OnClientLoadedStartScenes += OnClientLoadedStartScenes;
+        NetworkManager.SceneManager.OnClientPresenceChangeStart += OnClientPresenceChangeStart;
         NetworkManager.SceneManager.OnClientPresenceChangeEnd += OnClientPresenceChangeEnd;
-
+        
+        Debug.Log("starting to add nobs to match");
+        var _nobs = GameObject.FindObjectsOfType<NetworkObject>();
+        //MatchCondition.AddToMatch(0, _nobs, NetworkManager);
+        Debug.Log("all nobs added to match 0");
+        
         i_SceneEventSystem.enabled = false;
         i_MusicSource.Stop();
         i_MusicSource.enabled = false;
@@ -46,6 +58,7 @@ public class PlayerSpawnSystem : NetworkBehaviour
         
         ServerManager.OnRemoteConnectionState -= OnRemoteConnectionState;
         NetworkManager.SceneManager.OnClientLoadedStartScenes -= OnClientLoadedStartScenes;
+        NetworkManager.SceneManager.OnClientPresenceChangeStart -= OnClientPresenceChangeStart;
         NetworkManager.SceneManager.OnClientPresenceChangeEnd -= OnClientPresenceChangeEnd;
     }
     
@@ -65,7 +78,8 @@ public class PlayerSpawnSystem : NetworkBehaviour
     private void OnClientLoadedStartScenes(NetworkConnection _conn, bool _asServer) // this does not fire when changing scenes
     {
         Debug.Log("on client loaded start scenes");
-        // comment this to connect lobby scene then uncomment OnClientPresenceChangeEnd
+        // remove scripting symbol LOBBY_SYSTEM in build settings
+    #if !LOBBY_SYSTEM
         i_PlayerCount++;
         Vector3 _spawnPosition = Vector3.zero;
         Quaternion _spawnQuaternion = Quaternion.identity;
@@ -92,16 +106,32 @@ public class PlayerSpawnSystem : NetworkBehaviour
        
         ServerManager.Spawn(_player, _conn);
         SceneManager.AddOwnerToDefaultScene(_player);
+    #endif
+    }
+
+    private void OnClientPresenceChangeStart(ClientPresenceChangeEventArgs _args)
+    {
+        if (!_args.Added)
+        {
+            return;
+        }
     }
     
     private void OnClientPresenceChangeEnd(ClientPresenceChangeEventArgs _args) // this will be used when we connect the lobby system
     {
-        Debug.Log("client presence change end");
-        // uncomment this to connect lobby scene then comment OnClientLoadedStartScenes
-        /*if (!_args.Added)
+        Debug.Log("OnClientPresenceChangeEnd - start");
+        // add scripting symbol LOBBY_SYSTEM in build settings
+    #if LOBBY_SYSTEM
+        if (!_args.Added)
         {
             return;
         }
+        if (_args.Scene.handle != gameObject.scene.handle)
+        {
+            return;
+        }
+        Debug.Log("OnClientPresenceChangeEnd - past returns");
+        
         i_PlayerCount++;
         Vector3 _spawnPosition = Vector3.zero;
         Quaternion _spawnQuaternion = Quaternion.identity;
@@ -123,9 +153,52 @@ public class PlayerSpawnSystem : NetworkBehaviour
                 Debug.LogError("something's fucked up here", this);
                 break;
         }
+        Debug.Log("OnClientPresenceChangeEnd - past player setup");
 
+        // BUG: this isn't running correctly on playflow 
         NetworkObject _player = Instantiate(i_PlayerPrefab, _spawnPosition, _spawnQuaternion);
-        ServerManager.Spawn(_player, _args.Connection, _args.Scene);*/
+        ServerManager.Spawn(_player, _args.Connection, gameObject.scene);
+        //MatchCondition.AddToMatch(0, _player, NetworkManager);
+        Debug.Log("OnClientPresenceChangeEnd - past player spawn");
+        if (i_PlayerCount == 1)
+        {
+            i_PlayerOneObject = _player.gameObject;
+            Target_MovePlayers(_args.Connection, new GameObject[] {i_PlayerOneObject});
+        }
+        else if (i_PlayerCount == 2)
+        {
+            i_PlayerTwoObject = _player.gameObject;
+            Target_MovePlayers(_args.Connection, new GameObject[] {i_PlayerOneObject, i_PlayerTwoObject});
+        }
+
+        Debug.Log("OnClientPresenceChangeEnd - past target moveplayers");
+        /*if (i_PlayerCount == 2)
+        {
+            StartCoroutine(Test_DelayClientLoad());
+        }*/
+    #endif
     }
+    
+    /*private IEnumerator Test_DelayClientLoad()
+    {
+        yield return new WaitForSeconds(2f);
+        //MatchCondition.AddToMatch(0, i_TestP1HP, NetworkManager);
+        //MatchCondition.AddToMatch(0, i_TestP2HP, NetworkManager);
+        Debug.Log("starting to add nobs to match");
+        var _nobs = GameObject.FindObjectsOfType<NetworkObject>();
+        //MatchCondition.AddToMatch(0, _nobs, NetworkManager);
+        Debug.Log("all nobs added to match 0");
+    }*/
 #endregion Server
+
+[TargetRpc]
+private void Target_MovePlayers(NetworkConnection _conn, GameObject[] _players)
+{
+    //GameObject[] l_Players = GameObject.FindGameObjectsWithTag("Player");
+    foreach (var _player in _players)
+    {
+        UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(_player, gameObject.scene);
+    }
+    UnityEngine.SceneManagement.SceneManager.SetActiveScene(gameObject.scene);
+}
 }

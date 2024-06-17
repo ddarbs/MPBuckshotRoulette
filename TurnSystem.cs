@@ -2,11 +2,14 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using FishNet.Component.Observing;
 using FishNet.Connection;
+using FishNet.Managing.Scened;
 using FishNet.Object;
 using TMPro;
 using TTVadumb.Lobby;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using Random = UnityEngine.Random;
 
 public class TurnSystem : NetworkBehaviour
@@ -16,9 +19,13 @@ public class TurnSystem : NetworkBehaviour
     [SerializeField] private PlayerUiController i_PlayerUIController;
     [SerializeField] private PlayerItemSystem i_PlayerItemSystem;
     [SerializeField] private GameTurnController i_GameTurnController;
-    [SerializeField] private GameObject i_ShellUI, i_TurnUI;
+    [SerializeField] private GameObject i_ShellUI, i_TurnUI, i_ItemUI;
     [SerializeField] private TextMeshProUGUI i_ShellText;
-    [SerializeField] private Transform i_Shotgun, i_PlayerOneSpawn, i_PlayerTwoSpawn; // temp
+    [SerializeField] private Transform i_Shotgun, i_ShotgunPump, i_PlayerOneSpawn, i_PlayerTwoSpawn, i_ShotgunEjectPort; // temp
+    [SerializeField] private NetworkObject i_ShellLivePrefab, i_ShellBlankPrefab;
+    [SerializeField] private Transform[] i_ShellSpawnPositions;
+    [SerializeField] private GameObject i_PlayerOneVictoryLightOne, i_PlayerOneVictoryLightTwo, i_PlayerTwoVictoryLightOne, i_PlayerTwoVictoryLightTwo;
+    [SerializeField] private TextMeshProUGUI i_ItemTurnUseRemainingText;
     
     private const float c_TurnTime = 30f;
     private float i_TurnTime = 0f;
@@ -27,43 +34,40 @@ public class TurnSystem : NetworkBehaviour
 
     private bool i_RoundStarted = false;
     private bool i_TurnOverEarly = false;
+    private bool i_ItemPause = false;
 
     private const int c_MinShellCount = 4;
     private const int c_MaxShellCount = 10;
     private const int c_RandomShellCount = 2; // the last x shells will be rng'd live or blank
     private List<bool> i_ShellList = new List<bool>();
     private bool i_BlankSelf = false;
-
-    private int i_Damage = 1;
+    private int i_LiveShells = 0; // not updated in realtime, only used for spawning visual shells
+    private bool i_LastShellLive = false;
     
+    private int i_Damage = 1;
+
+    private PhysicsRaycaster i_ClientCameraRaycaster;
+    private bool i_RaycasterSetup = false;
     
     // Lobby Config Options
     private bool cfg_ItemsEnabled;
+    private bool cfg_ItemTurnCapEnabled;
     private bool cfg_SetShellsEnabled;
     private bool cfg_TurnTimerEnabled;
     private int cfg_ItemCount;
+    private int cfg_ItemTurnCap;
     private int cfg_ShellCount;
     private int cfg_TurnTime;
-    
-    public override void OnStartServer()
+
+    private void GrabLobbyParams(SceneLoadEndEventArgs _args)
     {
-        base.OnStartServer();
-
-        if (!GameObject.FindWithTag("LobbyTransfer")) // DEBUG: can tweak cfg options here if testing directly from game scene
-        {
-            cfg_ItemsEnabled = true;
-            cfg_ItemCount = 3;
-            cfg_SetShellsEnabled = false;
-            cfg_ShellCount = 0;
-            cfg_TurnTimerEnabled = true;
-            cfg_TurnTime = 30;
-            return;
-        }
+        Lobby l_Lobby = (Lobby)_args.QueueData.SceneLoadData.Params.ServerParams[0];
         
-        Lobby l_Lobby = GameObject.FindWithTag("LobbyTransfer").GetComponent<LobbyConfigTransfer>().p_Lobby;
-
+        //MatchCondition.AddToMatch(0, new NetworkConnection[]{l_Lobby.owner, l_Lobby.playertwo}, NetworkManager);
         cfg_ItemsEnabled = l_Lobby.cfg_ItemsEnabled;
         cfg_ItemCount = l_Lobby.cfg_ItemCount;
+        cfg_ItemTurnCapEnabled = l_Lobby.cfg_ItemTurnCapEnabled;
+        cfg_ItemTurnCap = l_Lobby.cfg_ItemTurnCap;
         cfg_SetShellsEnabled = l_Lobby.cfg_StaticShellCountEnabled;
         cfg_ShellCount = l_Lobby.cfg_ShellCount;
         cfg_TurnTimerEnabled = l_Lobby.cfg_TurnTimerEnabled;
@@ -87,20 +91,48 @@ public class TurnSystem : NetworkBehaviour
             default:
                 throw new ArgumentOutOfRangeException();
         }
+        Debug.Log("grabbed lobby cfg parameters");
+    }
+    
+    public override void OnStartServer()
+    {
+        base.OnStartServer();
+        
+        // add/remove scripting symbol LOBBY_SYSTEM in build settings
+    #if LOBBY_SYSTEM
+        SceneManager.OnLoadEnd += GrabLobbyParams;
+    #else
+        // DEBUG: can tweak cfg options here if testing directly from game scene
+        cfg_ItemsEnabled = true;
+        cfg_ItemCount = 8;
+        cfg_ItemTurnCapEnabled = true;
+        cfg_ItemTurnCap = 3;
+        cfg_SetShellsEnabled = false;
+        cfg_ShellCount = 0;
+        cfg_TurnTimerEnabled = true;
+        cfg_TurnTime = 30;
+    #endif
     }
 
     public void StartTurnSystem(bool _playerOneStart)
     {
-        Observer_NewRound();
+        if (!i_RaycasterSetup)
+        {
+            Observer_SetupPhysicsRaycaster();
+            i_RaycasterSetup = true;
+        }
+        Observer_DisablePhysicsRaycaster();
         
         i_PlayerOneTurn = _playerOneStart;
         i_RoundStarted = false;
         i_TurnOverEarly = false;
+        i_LiveShells = 0;
         i_ShellList.Clear();
+
+        i_Shotgun.localEulerAngles = new Vector3(0f, 45f, 90f);
         
         // alternate blank/live
         bool l_Live = false;
-        int l_LiveShells = 0;
         int l_ShellCount = 0;
         
         if (cfg_SetShellsEnabled)
@@ -116,7 +148,7 @@ public class TurnSystem : NetworkBehaviour
             i_ShellList.Add(l_Live);
             if (l_Live)
             {
-                l_LiveShells++;
+                i_LiveShells++;
             }
             l_Live = !l_Live;
         }
@@ -128,7 +160,7 @@ public class TurnSystem : NetworkBehaviour
             i_ShellList.Add(l_Live);
             if (l_Live)
             {
-                l_LiveShells++;
+                i_LiveShells++;
             }
         }
         
@@ -144,7 +176,7 @@ public class TurnSystem : NetworkBehaviour
         //i_ShellList = l_RandomShellList;
         
         // show the shell count
-        Observer_ShowShells(l_LiveShells, l_ShellCount - l_LiveShells);
+        //Observer_ShowShells(i_LiveShells, l_ShellCount - i_LiveShells);
         
         StartCoroutine(TurnThread());
     }
@@ -163,35 +195,46 @@ public class TurnSystem : NetworkBehaviour
             
             //Pan to P1 Health, Activate it
             i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerOne,i_PlayerUIController.i_p1CameraPositions[1].transform.position, i_PlayerUIController.i_p1CameraLookAt[1].transform.position);
-            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerTwo,i_PlayerUIController.i_p2CameraPositions[1].transform.position, i_PlayerUIController.i_p2CameraLookAt[1].transform.position );
+            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerTwo,i_PlayerUIController.i_p2CameraPositions[1].transform.position, i_PlayerUIController.i_p2CameraLookAt[1].transform.position);
             yield return new WaitForSeconds(2.5f);
             //i_PlayerUIController.activateGameObject(i_PlayerUIController.i_p1Health);
-            i_PlayerUIController.Observer_ActivatePlayerOneHealth();
-            yield return new WaitForSeconds(1f);
-            //Pan to p2 health, Activate it
-            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerOne,i_PlayerUIController.i_p1CameraPositions[2].transform.position, i_PlayerUIController.i_p1CameraLookAt[2].transform.position);
-            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerTwo,i_PlayerUIController.i_p2CameraPositions[2].transform.position, i_PlayerUIController.i_p2CameraLookAt[2].transform.position );
-            yield return new WaitForSeconds(2.5f);
-            //i_PlayerUIController.activateGameObject(i_PlayerUIController.i_p2Health);
-            i_PlayerUIController.Observer_ActivatePlayerTwoHealth();
+            Observer_NewRound();
+            i_PlayerUIController.Observer_ActivatePlayerOneHealth(i_PlayerOneHealth.GetHealth());
             yield return new WaitForSeconds(1f);
             
-            // Pan to Ammo show grey / blue, then remove them
-            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerOne,i_PlayerUIController.i_p1CameraPositions[3].transform.position, i_PlayerUIController.i_p1CameraLookAt[3].transform.position);
-            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerTwo,i_PlayerUIController.i_p2CameraPositions[3].transform.position, i_PlayerUIController.i_p2CameraLookAt[3].transform.position );
+            //Pan to p2 health, Activate it
+            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerOne,i_PlayerUIController.i_p1CameraPositions[2].transform.position, i_PlayerUIController.i_p1CameraLookAt[2].transform.position);
+            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerTwo,i_PlayerUIController.i_p2CameraPositions[2].transform.position, i_PlayerUIController.i_p2CameraLookAt[2].transform.position);
             yield return new WaitForSeconds(2.5f);
-            i_PlayerUIController.activateGameObject(i_PlayerUIController.i_Ammo);
+            //i_PlayerUIController.activateGameObject(i_PlayerUIController.i_p2Health);
+            Observer_NewRound();
+            i_PlayerUIController.Observer_ActivatePlayerTwoHealth(i_PlayerTwoHealth.GetHealth());
             yield return new WaitForSeconds(1f);
+            
+            // Pan to Ammo show red / blue, then remove them
+            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerOne,i_PlayerUIController.i_p1CameraPositions[3].transform.position, i_PlayerUIController.i_p1CameraLookAt[3].transform.position);
+            i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerTwo,i_PlayerUIController.i_p2CameraPositions[3].transform.position, i_PlayerUIController.i_p2CameraLookAt[3].transform.position);
+            yield return new WaitForSeconds(2.5f);
+            StartCoroutine(SpawnShells());
+            //i_PlayerUIController.activateGameObject(i_PlayerUIController.i_Ammo);
+            yield return new WaitForSeconds(i_ShellList.Count * 0.4f + 1f);
+            
+            // load shells
+            i_Shotgun.localEulerAngles = new Vector3(0f, -45f, -90f);
+            yield return new WaitForSeconds(0.5f);
             for (int i = 0; i < i_ShellList.Count; i++)
             {
                 Observer_AudioLoadShell();
                 yield return new WaitForSeconds(0.2f);
             }
             yield return new WaitForSeconds(1f);
-            Observer_AudioRackShotgun();
-            yield return new WaitForSeconds(2f);
-            Observer_HideShells();
-            yield return new WaitForSeconds(1f);
+            Observer_RackShotgun();
+            //StartCoroutine(ShotgunPump());
+            yield return new WaitForSeconds(2.5f);
+            //Observer_HideShells();
+            //yield return new WaitForSeconds(1f);
+            
+            // goto items
             if (cfg_ItemsEnabled)
             {
                 // Pan to Items 
@@ -202,12 +245,14 @@ public class TurnSystem : NetworkBehaviour
                 i_PlayerItemSystem.SpawnItems(cfg_ItemCount);
                 yield return new WaitForSeconds(2.5f);
             }
+            
             // Default Look 
             i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerOne,i_PlayerUIController.i_p1CameraPositions[0].transform.position, i_PlayerUIController.i_p1CameraLookAt[0].transform.position);
             i_PlayerUIController.StartCameraMovement(i_PlayerSpawnSystem.i_PlayerTwo,i_PlayerUIController.i_p2CameraPositions[0].transform.position, i_PlayerUIController.i_p2CameraLookAt[0].transform.position );
             yield return new WaitForSeconds(2.5f);
+            
             // Spawn Shotgun
-            i_PlayerUIController.activateGameObject(i_PlayerUIController.i_Shotgun);
+            //i_PlayerUIController.activateGameObject(i_PlayerUIController.i_Shotgun); // spawning shotgun after it was already loaded
             // Activate Timer
             
             i_RoundStarted = true;
@@ -218,15 +263,17 @@ public class TurnSystem : NetworkBehaviour
         i_TurnTime = cfg_TurnTime;
         i_TurnOverEarly = false;
         i_PlayerItemSystem.ResetSpecialItems();
-        i_Shotgun.LookAt(i_Shotgun.up);
+        i_Shotgun.localEulerAngles = i_PlayerOneTurn ? new Vector3(0f, -45f, -90f) : new Vector3(0f, 135f, -90f);
+        
+        Observer_EnablePhysicsRaycaster();
         
         switch (i_PlayerOneTurn)
         {
             case true:
-                Target_StartTurn(i_PlayerSpawnSystem.i_PlayerOne);
+                Target_ShowTurnUI(i_PlayerSpawnSystem.i_PlayerOne, cfg_ItemTurnCapEnabled, cfg_ItemTurnCap - i_PlayerItemSystem.GetItemsUsedThisTurn());
                 break;
             case false:
-                Target_StartTurn(i_PlayerSpawnSystem.i_PlayerTwo);
+                Target_ShowTurnUI(i_PlayerSpawnSystem.i_PlayerTwo, cfg_ItemTurnCapEnabled, cfg_ItemTurnCap - i_PlayerItemSystem.GetItemsUsedThisTurn());
                 break;
         }
 
@@ -234,6 +281,19 @@ public class TurnSystem : NetworkBehaviour
         {
             while (i_TurnTime > 0f && !i_TurnOverEarly)
             {
+                while (i_ItemPause)
+                {
+                    yield return new WaitForSeconds(0.5f);
+                    if (i_TurnOverEarly)
+                    {
+                        i_ItemPause = false;
+                    }
+                }
+
+                if (i_PlayerOneHealth.GetHealth() <= 0 || i_PlayerTwoHealth.GetHealth() <= 0)
+                {
+                    break;
+                }
                 yield return new WaitForSeconds(0.5f);
                 i_TurnTime -= 0.5f;
             }
@@ -242,15 +302,34 @@ public class TurnSystem : NetworkBehaviour
         {
             while (!i_TurnOverEarly)
             {
+                while (i_ItemPause)
+                {
+                    yield return new WaitForSeconds(0.5f);
+                    if (i_TurnOverEarly)
+                    {
+                        i_ItemPause = false;
+                    }
+                }
+                
+                if (i_PlayerOneHealth.GetHealth() <= 0 || i_PlayerTwoHealth.GetHealth() <= 0)
+                {
+                    break;
+                }
                 yield return new WaitForSeconds(0.5f);
             }
         }
-        
 
+        Observer_DisablePhysicsRaycaster();
         if (i_TurnOverEarly)
         {
-            // michael // TODO: observer shotgun blast
-            yield return new WaitForSeconds(1f);
+            yield return new WaitForSeconds(1.5f);
+            Observer_RackShotgun();
+            //Observer_AudioRackShotgun();
+            //Observer_VisualRackShotgun();
+            //StartCoroutine(ShotgunPump());
+            StartCoroutine(EjectShellVisual(i_LastShellLive));
+            yield return new WaitForSeconds(3.5f);
+            i_Shotgun.localEulerAngles = new Vector3(0f, 45f, 90f);
         }
         
         // stop the round if one of them is dead
@@ -261,14 +340,17 @@ public class TurnSystem : NetworkBehaviour
             switch (i_PlayerOneTurn)
             {
                 case true:
-                    Target_EndTurn(i_PlayerSpawnSystem.i_PlayerOne);
+                    Target_HideTurnUI(i_PlayerSpawnSystem.i_PlayerOne, cfg_ItemTurnCapEnabled);
                     break;
                 case false:
-                    Target_EndTurn(i_PlayerSpawnSystem.i_PlayerTwo);
+                    Target_HideTurnUI(i_PlayerSpawnSystem.i_PlayerTwo, cfg_ItemTurnCapEnabled);
                     break;
             }
             Observer_HideShells();
-            yield return new WaitForSeconds(2f);
+            yield return new WaitForSeconds(2.5f);
+            StartCoroutine(GameOverVisual());
+            Observer_StartClientVictoryVisual(i_PlayerOneHealth.GetHealth() > i_PlayerTwoHealth.GetHealth());
+            yield return new WaitForSeconds(5f);
             i_PlayerOneHealth.EndGame();
             i_PlayerTwoHealth.EndGame();
             i_GameTurnController.Server_EndGame();
@@ -284,10 +366,10 @@ public class TurnSystem : NetworkBehaviour
             switch (i_PlayerOneTurn)
             {
                 case true:
-                    Target_EndTurn(i_PlayerSpawnSystem.i_PlayerOne);
+                    Target_HideTurnUI(i_PlayerSpawnSystem.i_PlayerOne, cfg_ItemTurnCapEnabled);
                     break;
                 case false:
-                    Target_EndTurn(i_PlayerSpawnSystem.i_PlayerTwo);
+                    Target_HideTurnUI(i_PlayerSpawnSystem.i_PlayerTwo, cfg_ItemTurnCapEnabled);
                     break;
             }
             
@@ -304,10 +386,10 @@ public class TurnSystem : NetworkBehaviour
         switch (i_PlayerOneTurn)
         {
             case true:
-                Target_EndTurn(i_PlayerSpawnSystem.i_PlayerOne);
+                Target_HideTurnUI(i_PlayerSpawnSystem.i_PlayerOne, cfg_ItemTurnCapEnabled);
                 break;
             case false:
-                Target_EndTurn(i_PlayerSpawnSystem.i_PlayerTwo);
+                Target_HideTurnUI(i_PlayerSpawnSystem.i_PlayerTwo, cfg_ItemTurnCapEnabled);
                 break;
         }
         
@@ -320,14 +402,132 @@ public class TurnSystem : NetworkBehaviour
         StartCoroutine(TurnThread());
     }
 
+    private IEnumerator ShotgunPump()
+    {
+        Vector3 l_ShotgunPumpLocalPosition = i_ShotgunPump.localPosition;
+        while (i_ShotgunPump.localPosition.z < -1.25f)
+        {
+            l_ShotgunPumpLocalPosition.z += 0.01f;
+            i_ShotgunPump.localPosition = l_ShotgunPumpLocalPosition;
+            yield return new WaitForSeconds(0.005f);
+        }
+        while (i_ShotgunPump.localPosition.z > -1.91f)
+        {
+            l_ShotgunPumpLocalPosition.z -= 0.01f;
+            i_ShotgunPump.localPosition = l_ShotgunPumpLocalPosition;
+            yield return new WaitForSeconds(0.005f);
+        }
+    }
+    
+    private IEnumerator SpawnShells()
+    {
+        List<NetworkObject> l_Shells = new List<NetworkObject>();
+        for (int i = 0; i < i_LiveShells; i++)
+        {
+            NetworkObject l_Shell = Instantiate(i_ShellLivePrefab, i_ShellSpawnPositions[i].position, Quaternion.identity);
+            ServerManager.Spawn(l_Shell, null, gameObject.scene);
+            l_Shells.Add(l_Shell);
+            Observer_AudioSpawnShell();
+            yield return new WaitForSeconds(0.2f);
+        }
+        for (int i = i_LiveShells; i < i_ShellList.Count; i++)
+        {
+            NetworkObject l_Shell = Instantiate(i_ShellBlankPrefab, i_ShellSpawnPositions[i].position, Quaternion.identity);
+            ServerManager.Spawn(l_Shell, null, gameObject.scene);
+            l_Shells.Add(l_Shell);
+            Observer_AudioSpawnShell();
+            yield return new WaitForSeconds(0.2f);
+        }
+        
+        foreach (NetworkObject _shell in l_Shells)
+        {
+            ServerManager.Despawn(_shell);
+            yield return new WaitForSeconds(0.2f);
+        }
+    }
+
+    private IEnumerator EjectShellVisual(bool _live)
+    {
+        NetworkObject l_Shell = default;
+
+        switch (_live)
+        {
+            case true:
+                l_Shell = Instantiate(i_ShellLivePrefab, i_ShotgunEjectPort.position, i_ShotgunEjectPort.rotation);
+                break;
+            case false:
+                l_Shell = Instantiate(i_ShellBlankPrefab, i_ShotgunEjectPort.position, i_ShotgunEjectPort.rotation);
+                break;
+        }
+        ServerManager.Spawn(l_Shell, null, gameObject.scene);
+        
+        Observer_EjectShell(l_Shell.gameObject);
+        
+        yield return new WaitForSeconds(2f);
+        
+        ServerManager.Despawn(l_Shell);
+    }
+
+    private IEnumerator GameOverVisual()
+    {
+        Observer_AudioGameOverStart();
+        yield return new WaitForSeconds(2f);
+        Observer_AudioGameOverEnd();
+    }
+
     #region Items
+    public bool GetItemTurnCapEnabled()
+    {
+        return cfg_ItemTurnCapEnabled;
+    }
+    
+    public int GetMaxItemUsePerTurn()
+    {
+        return cfg_ItemTurnCap;
+    }
+    
+    public void Server_UseItem(string _item)
+    {
+        i_ItemPause = true;
+        Observer_DisablePhysicsRaycaster();
+        Target_HideTurnUI(i_PlayerOneTurn ? i_PlayerSpawnSystem.i_PlayerOne : i_PlayerSpawnSystem.i_PlayerTwo, cfg_ItemTurnCapEnabled);
+        
+        StartCoroutine(TimedUseItem(4f));
+        
+        switch (_item)
+        {
+            case "Item_Smokes":
+                break;
+            case "Item_Beer":
+                break;
+            case "Item_Pills":
+                break;
+            case "Item_Inverter":
+                break;
+            case "Item_Magnifying":
+                break;
+            case "Item_Saw":
+                break;
+            case "Item_Phone":
+                break;
+        }
+    }
+
+    private IEnumerator TimedUseItem(float _duration)
+    {
+        yield return new WaitForSeconds(_duration);
+        Target_ShowTurnUI(i_PlayerOneTurn ? i_PlayerSpawnSystem.i_PlayerOne : i_PlayerSpawnSystem.i_PlayerTwo, cfg_ItemTurnCapEnabled, cfg_ItemTurnCap - i_PlayerItemSystem.GetItemsUsedThisTurn());
+        Observer_EnablePhysicsRaycaster();
+        i_ItemPause = false;
+    }
+    
     private IEnumerator DelayHideShellText()
     {
         yield return new WaitForSeconds(2f);
         Observer_HideShells();
     }
     
-    public void Server_EjectShell()
+    public void Server_EjectShell() // beer
     {
         bool l_Live = i_ShellList[0];
         
@@ -339,12 +539,17 @@ public class TurnSystem : NetworkBehaviour
         {
             Debug.Log("(server) ejected a Blank shell");
         }
+
         
         i_ShellList.RemoveAt(0);
         
-        Observer_ShowEjectShell(l_Live);
-        StartCoroutine(DelayHideShellText());
-        // TODO: replace text stuff with server spawning and ejecting shell
+        //Observer_ShowEjectShell(l_Live);
+        //StartCoroutine(DelayHideShellText());
+        Observer_RackShotgun();
+        //StartCoroutine(ShotgunPump());
+        StartCoroutine(EjectShellVisual(l_Live));
+        
+        i_LastShellLive = l_Live;
     }
 
     public void Server_InvertShell()
@@ -372,7 +577,7 @@ public class TurnSystem : NetworkBehaviour
         // TODO: replace text stuff
     }
 
-    public void Server_DoubleDamage()
+    public void Server_DoubleDamage() // saw
     {
         i_Damage++;
         
@@ -492,18 +697,29 @@ public class TurnSystem : NetworkBehaviour
         {
             Observer_AudioFireBlank();
         }
+
+        i_LastShellLive = l_Live;
     }
 
     [TargetRpc]
-    private void Target_StartTurn(NetworkConnection _conn)
+    private void Target_ShowTurnUI(NetworkConnection _conn, bool _itemCapEnabled, int _itemCap)
     {
         i_TurnUI.SetActive(true);
+        if (_itemCapEnabled)
+        {
+            i_ItemTurnUseRemainingText.text = $"item uses: {_itemCap}";
+            i_ItemUI.SetActive(true);
+        }
     }
     
     [TargetRpc]
-    private void Target_EndTurn(NetworkConnection _conn)
+    private void Target_HideTurnUI(NetworkConnection _conn, bool _itemCapEnabled)
     {
         i_TurnUI.SetActive(false);
+        if (_itemCapEnabled)
+        {
+            i_ItemUI.SetActive(false);
+        }
     }
 
     [TargetRpc]
@@ -538,6 +754,24 @@ public class TurnSystem : NetworkBehaviour
         }
     }
     
+    [ObserversRpc(ExcludeServer = true)]
+    private void Observer_SetupPhysicsRaycaster()
+    {
+        i_ClientCameraRaycaster = Camera.main.GetComponent<PhysicsRaycaster>(); // fuck me for doing it this way
+    }
+
+    [ObserversRpc(ExcludeServer = true)]
+    private void Observer_DisablePhysicsRaycaster()
+    {
+        i_ClientCameraRaycaster.enabled = false;
+    }
+    
+    [ObserversRpc(ExcludeServer = true)]
+    private void Observer_EnablePhysicsRaycaster()
+    {
+        i_ClientCameraRaycaster.enabled = true;
+    }
+    
     [ObserversRpc]
     private void Observer_ShowShells(int _live, int _blank)
     {
@@ -567,7 +801,102 @@ public class TurnSystem : NetworkBehaviour
             Debug.Log("(client) ejected a Blank shell");
         }
     }
+    
+    [ObserversRpc]
+    private void Observer_StartClientVictoryVisual(bool _playerOneVictory)
+    {
+        StartCoroutine(_playerOneVictory ? ClientPlayerOneVictoryVisual() : ClientPlayerTwoVictoryVisual());
+    }
 
+    private IEnumerator ClientPlayerOneVictoryVisual()
+    {
+        // light 1 on light 2 off
+        i_PlayerOneVictoryLightOne.SetActive(true);
+        yield return new WaitForSeconds(1f);
+        // light 1 off light 2 on
+        i_PlayerOneVictoryLightOne.SetActive(false);
+        i_PlayerOneVictoryLightTwo.SetActive(true);
+        yield return new WaitForSeconds(1f);
+        // light 1 on light 2 off
+        i_PlayerOneVictoryLightOne.SetActive(true);
+        i_PlayerOneVictoryLightTwo.SetActive(false);
+        yield return new WaitForSeconds(1f);
+        // light 1 off light 2 on
+        i_PlayerOneVictoryLightOne.SetActive(false);
+        i_PlayerOneVictoryLightTwo.SetActive(true);
+        yield return new WaitForSeconds(1f);
+        // light 1 off light 2 off
+        i_PlayerOneVictoryLightTwo.SetActive(false);
+    }
+    
+    private IEnumerator ClientPlayerTwoVictoryVisual()
+    {
+        // light 1 on light 2 off
+        i_PlayerTwoVictoryLightOne.SetActive(true);
+        yield return new WaitForSeconds(1f);
+        // light 1 off light 2 on
+        i_PlayerTwoVictoryLightOne.SetActive(false);
+        i_PlayerTwoVictoryLightTwo.SetActive(true);
+        yield return new WaitForSeconds(1f);
+        // light 1 on light 2 off
+        i_PlayerTwoVictoryLightOne.SetActive(true);
+        i_PlayerTwoVictoryLightTwo.SetActive(false);
+        yield return new WaitForSeconds(1f);
+        // light 1 off light 2 on
+        i_PlayerTwoVictoryLightOne.SetActive(false);
+        i_PlayerTwoVictoryLightTwo.SetActive(true);
+        yield return new WaitForSeconds(1f);
+        // light 1 off light 2 off
+        i_PlayerTwoVictoryLightTwo.SetActive(false);
+    }
+
+    [ObserversRpc]
+    private void Observer_RackShotgun()
+    {
+        AudioSystem.Game_Shotgun_Rack();
+        StartCoroutine(VisualRackShotgun());
+    }
+
+    private IEnumerator VisualRackShotgun()
+    {
+        Vector3 l_ShotgunPumpLocalPosition = i_ShotgunPump.localPosition;
+        while (i_ShotgunPump.localPosition.z < -1.25f)
+        {
+            l_ShotgunPumpLocalPosition.z += 0.01f;
+            i_ShotgunPump.localPosition = l_ShotgunPumpLocalPosition;
+            yield return new WaitForSeconds(0.01f);
+        }
+        while (i_ShotgunPump.localPosition.z > -1.91f)
+        {
+            l_ShotgunPumpLocalPosition.z -= 0.01f;
+            i_ShotgunPump.localPosition = l_ShotgunPumpLocalPosition;
+            yield return new WaitForSeconds(0.01f);
+        }
+    }
+    
+    [ObserversRpc]
+    private void Observer_EjectShell(GameObject _shell)
+    {
+        StartCoroutine(VisualEjectShell(_shell));
+    }
+
+    private IEnumerator VisualEjectShell(GameObject _shell)
+    {
+        yield return new WaitForSeconds(0.5f);
+        Debug.LogWarning("this may error, not an issue", this);
+        Vector3 l_Direction = -i_ShotgunEjectPort.transform.right; 
+        float l_Timer = 2.5f;
+        while (l_Timer > 0f)
+        {
+            if (_shell == null)
+            {
+                break;
+            }
+            _shell.transform.position += (l_Direction * 0.025f);
+            yield return new WaitForSeconds(0.025f);
+            l_Timer -= 0.025f;
+        }
+    }
 #region Audio
     [ObserversRpc]
     private void Observer_NewRound()
@@ -589,10 +918,25 @@ public class TurnSystem : NetworkBehaviour
     {
         AudioSystem.Game_Shotgun_LoadShell();
     }
-    [ObserversRpc]
+    /*[ObserversRpc] // combined into Observer_RackShotgun()
     private void Observer_AudioRackShotgun()
     {
         AudioSystem.Game_Shotgun_Rack();
+    }*/
+    [ObserversRpc]
+    private void Observer_AudioGameOverStart()
+    {
+        AudioSystem.Game_Over_Start();
+    }
+    [ObserversRpc]
+    private void Observer_AudioGameOverEnd()
+    {
+        AudioSystem.Game_Over_End();
+    }
+    [ObserversRpc]
+    private void Observer_AudioSpawnShell()
+    {
+        AudioSystem.Game_Shell_Spawn();
     }
 #endregion Audio
     
@@ -600,6 +944,7 @@ public class TurnSystem : NetworkBehaviour
     public void Button_Shoot(bool _self)
     {
         i_TurnUI.SetActive(false);
+        i_ItemUI.SetActive(false);
         Server_Shoot(base.LocalConnection, _self);
     }
 }

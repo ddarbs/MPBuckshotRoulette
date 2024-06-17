@@ -18,17 +18,18 @@ public class PlayerItemSystem : NetworkBehaviour
     [SerializeField] private ServerSideHealth i_PlayerOneHealth, i_PlayerTwoHealth;
     [SerializeField] private TurnSystem i_TurnSystem;
     [SerializeField] private TextMeshProUGUI i_ItemDescriptionText;
+    [SerializeField] private TextMeshProUGUI i_ItemTurnUseRemainingText;
 #endregion Inspector Refs
 
 #region Variables
     private const float i_PillHealChance = 0.4f;
 
     private static PlayerItemSystem i_Instance;
-    private Scene i_Scene;
     private Dictionary<int, bool> i_PlayerOneSlotDictionary, i_PlayerTwoSlotDictionary; // false meaning no item is in that slot, true meaning an item is in that slot
     private Dictionary<NetworkObject, int> i_PlayerOneItemDictionary, i_PlayerTwoItemDictionary;
     private NetworkConnection i_PlayerOne, i_PlayerTwo;
     private bool i_SawUsed = false;
+    private int i_ItemsUsedThisTurn = 0;
 #endregion Variables
 
     private void Awake()
@@ -37,11 +38,6 @@ public class PlayerItemSystem : NetworkBehaviour
     }
 
 #region Server
-    public void SceneSetup(Scene _scene)
-    {
-        i_Scene = _scene;
-    }
-    
     public void Setup(NetworkConnection[] _conns)
     {
         i_PlayerOne = _conns[0];
@@ -60,6 +56,8 @@ public class PlayerItemSystem : NetworkBehaviour
         {
             i_PlayerTwoSlotDictionary.Add(i, false);
         }
+
+        i_ItemsUsedThisTurn = 0;
     }
 
     public void SpawnItems(int _items) // call from turn or round system?
@@ -79,7 +77,7 @@ public class PlayerItemSystem : NetworkBehaviour
             
             NetworkObject l_Item = Instantiate(RandomItem(), i_PlayerOneSpawns[i].position, Quaternion.identity);
             i_PlayerOneItemDictionary.Add(l_Item, i);
-            ServerManager.Spawn(l_Item, i_PlayerOne, i_Scene);
+            ServerManager.Spawn(l_Item, i_PlayerOne, gameObject.scene);
             i_PlayerOneSlotDictionary[i] = true;
             l_Spawned++;
         }
@@ -104,7 +102,7 @@ public class PlayerItemSystem : NetworkBehaviour
             
             NetworkObject l_Item = Instantiate(RandomItem(), i_PlayerTwoSpawns[i].position, Quaternion.identity);
             i_PlayerTwoItemDictionary.Add(l_Item, i);
-            ServerManager.Spawn(l_Item, i_PlayerTwo, i_Scene);
+            ServerManager.Spawn(l_Item, i_PlayerTwo, gameObject.scene);
             i_PlayerTwoSlotDictionary[i] = true;
             l_Spawned++;
         }
@@ -126,15 +124,26 @@ public class PlayerItemSystem : NetworkBehaviour
         {
             return;
         }
+        // check item cap cfg 
+        if (i_TurnSystem.GetItemTurnCapEnabled())
+        {
+            if (i_ItemsUsedThisTurn >= i_TurnSystem.GetMaxItemUsePerTurn())
+            {
+                return;
+            }
+        }
+        // can't stack saws
         if (i_SawUsed && _item.CompareTag("Item_Saw"))
         {
             return;
         }
+
+        i_ItemsUsedThisTurn++;
         
-        // TODO: item-specific functions? bring up a ui menu to confirm? need to double check what buckshot does I can't remember
+        i_TurnSystem.Server_UseItem(_item.tag); // pause turn system
         
         int l_Slot = -1;
-        switch (_player)
+        switch (_player) 
         {
             case 1:
                 if (i_PlayerOneItemDictionary.TryGetValue(_item, out l_Slot))
@@ -178,15 +187,11 @@ public class PlayerItemSystem : NetworkBehaviour
                             i_TurnSystem.Server_PhoneCall();
                             Observer_AudioItemPhone();
                             break;
-                        /* TODO:
-                         * find models and implement the prefabs + slot onto item system
-                         * no adrenaline or handcuffs 
-                         */
                     }
                     i_PlayerOneItemDictionary.Remove(_item);
                     ServerManager.Despawn(_item);
                     i_PlayerOneSlotDictionary[l_Slot] = false;
-                    Target_ItemUsed(i_PlayerOne);
+                    Target_ItemUsed(i_PlayerOne, i_TurnSystem.GetMaxItemUsePerTurn() - i_ItemsUsedThisTurn);
                 }
                 break;
             case 2:
@@ -235,7 +240,7 @@ public class PlayerItemSystem : NetworkBehaviour
                     i_PlayerTwoItemDictionary.Remove(_item);
                     ServerManager.Despawn(_item);
                     i_PlayerTwoSlotDictionary[l_Slot] = false;
-                    Target_ItemUsed(i_PlayerTwo);
+                    Target_ItemUsed(i_PlayerTwo, i_TurnSystem.GetMaxItemUsePerTurn() - i_ItemsUsedThisTurn);
                 }
                 break;
         }
@@ -249,6 +254,7 @@ public class PlayerItemSystem : NetworkBehaviour
     public void ResetSpecialItems()
     {
         i_SawUsed = false;
+        i_ItemsUsedThisTurn = 0;
     }
 
     public void EndGame()
@@ -263,6 +269,11 @@ public class PlayerItemSystem : NetworkBehaviour
         }
 
         Observer_EndGame();
+    }
+
+    public int GetItemsUsedThisTurn()
+    {
+        return i_ItemsUsedThisTurn;
     }
 #endregion Server
 
@@ -311,9 +322,10 @@ public class PlayerItemSystem : NetworkBehaviour
     }
 
     [TargetRpc]
-    private void Target_ItemUsed(NetworkConnection _conn)
+    private void Target_ItemUsed(NetworkConnection _conn, int _usesRemaining)
     {
         Client_StopHoverItem();
+        i_ItemTurnUseRemainingText.text = $"item uses: {_usesRemaining}";
     }
 
     [ObserversRpc]
